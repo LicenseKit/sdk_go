@@ -11,8 +11,8 @@ import (
 type vectorFile struct {
 	Version       int                  `json:"version"`
 	Notes         string               `json:"notes"`
-	Keys          json.RawMessage      `json:"keys"`           // ignore — for LK1 vectors
-	Cases         json.RawMessage      `json:"cases"`          // ignore — for LK1 vectors
+	Keys          json.RawMessage      `json:"keys"`  // ignore — for LK1 vectors
+	Cases         json.RawMessage      `json:"cases"` // ignore — for LK1 vectors
 	LKBundleCases []lkbundleVectorCase `json:"lkbundle_cases"`
 }
 
