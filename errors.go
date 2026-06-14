@@ -26,10 +26,11 @@ var (
 	// bundle from the vendor.
 	ErrExpired = errors.New("lk: license expired")
 
-	// ErrClockAnomaly — system time is BEFORE the high-watermark
-	// recorded in the sidecar. Indicates a clock rollback or that
-	// the bundle was moved to a machine with a wrong clock. Treat
-	// as expired (refuse to serve).
+	// ErrClockAnomaly — the system clock appears to have been rolled
+	// back. Triggered either when system time is BEFORE the high-watermark
+	// recorded in the sidecar, OR when system time is BEFORE the token's
+	// signed issue time (iat) minus the allowed skew — the latter needs no
+	// sidecar. Treat as expired (refuse to serve).
 	ErrClockAnomaly = errors.New("lk: clock anomaly detected")
 
 	// ErrWatermarkTampered — sidecar HMAC validation failed. Refuse

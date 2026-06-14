@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -138,5 +139,141 @@ func TestVerify_MissingLicenseID(t *testing.T) {
 	_, err := Verify(bundle, WithFingerprint("00"+`"`))
 	if err == nil {
 		t.Fatal("expected error for missing WithLicenseID, got nil")
+	}
+}
+
+func TestVerify_FutureIAT_ClockAnomaly(t *testing.T) {
+	fp := "00112233445566778899aabbccddeeff" + "00112233445566778899aabbccddeeff"
+	lid := [16]byte{1}
+	// iat 1h in the future simulates the system clock rolled back below
+	// the token's issue time. No sidecar involved — this is stateless.
+	bundle := makeBundle(t, fp, lid, Claims{
+		LID: "lic_x",
+		IAT: time.Now().Add(1 * time.Hour).Unix(),
+	})
+
+	_, err := Verify(bundle, WithFingerprint(fp), WithLicenseID(lid))
+	if err != ErrClockAnomaly {
+		t.Fatalf("expected ErrClockAnomaly, got %v", err)
+	}
+}
+
+func TestVerify_IATWithinSkew_OK(t *testing.T) {
+	fp := "00112233445566778899aabbccddeeff" + "00112233445566778899aabbccddeeff"
+	lid := [16]byte{1}
+	// iat 1 minute ahead is within the 5-minute skew tolerance — fine.
+	bundle := makeBundle(t, fp, lid, Claims{
+		LID: "lic_x",
+		IAT: time.Now().Add(1 * time.Minute).Unix(),
+	})
+
+	if _, err := Verify(bundle, WithFingerprint(fp), WithLicenseID(lid)); err != nil {
+		t.Fatalf("Verify within skew should pass, got %v", err)
+	}
+}
+
+func TestVerify_IATBoundary(t *testing.T) {
+	fp := "00112233445566778899aabbccddeeff" + "00112233445566778899aabbccddeeff"
+	lid := [16]byte{1}
+
+	// 6 minutes ahead is just past the 5-minute skew → anomaly.
+	justOver := makeBundle(t, fp, lid, Claims{LID: "lic_x", IAT: time.Now().Add(6 * time.Minute).Unix()})
+	if _, err := Verify(justOver, WithFingerprint(fp), WithLicenseID(lid)); err != ErrClockAnomaly {
+		t.Fatalf("6m ahead should be ErrClockAnomaly, got %v", err)
+	}
+
+	// 4 minutes ahead is within the 5-minute skew → OK.
+	justUnder := makeBundle(t, fp, lid, Claims{LID: "lic_x", IAT: time.Now().Add(4 * time.Minute).Unix()})
+	if _, err := Verify(justUnder, WithFingerprint(fp), WithLicenseID(lid)); err != nil {
+		t.Fatalf("4m ahead should pass, got %v", err)
+	}
+}
+
+func TestVerify_AutoWatermark_CreatesSidecar(t *testing.T) {
+	tmp := t.TempDir()
+	orig := userConfigDir
+	userConfigDir = func() (string, error) { return tmp, nil }
+	t.Cleanup(func() { userConfigDir = orig })
+
+	fp := "00112233445566778899aabbccddeeff" + "00112233445566778899aabbccddeeff"
+	lid := [16]byte{1, 2, 3}
+	bundle := makeBundle(t, fp, lid, Claims{LID: "lic_x"})
+
+	lic, err := Verify(bundle, WithFingerprint(fp), WithLicenseID(lid), WithAutoWatermark())
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	want := filepath.Join(tmp, "licensekit", lidString(lid)+".lk-watermark")
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("auto sidecar not created at %s: %v", want, err)
+	}
+	if err := lic.Check(); err != nil {
+		t.Errorf("Check after auto Verify: %v", err)
+	}
+}
+
+func TestVerify_AutoWatermark_ConfigDirError(t *testing.T) {
+	orig := userConfigDir
+	userConfigDir = func() (string, error) { return "", errors.New("no HOME") }
+	t.Cleanup(func() { userConfigDir = orig })
+
+	fp := "00112233445566778899aabbccddeeff" + "00112233445566778899aabbccddeeff"
+	lid := [16]byte{1}
+	bundle := makeBundle(t, fp, lid, Claims{LID: "lic_x"})
+
+	if _, err := Verify(bundle, WithFingerprint(fp), WithLicenseID(lid), WithAutoWatermark()); err == nil {
+		t.Fatal("expected error when userConfigDir fails, got nil")
+	}
+}
+
+func TestVerify_AutoWatermark_ClockRollback(t *testing.T) {
+	tmp := t.TempDir()
+	orig := userConfigDir
+	userConfigDir = func() (string, error) { return tmp, nil }
+	t.Cleanup(func() { userConfigDir = orig })
+
+	fp := "00112233445566778899aabbccddeeff" + "00112233445566778899aabbccddeeff"
+	lid := [16]byte{1}
+	bundle := makeBundle(t, fp, lid, Claims{LID: "lic_x"})
+
+	base := filepath.Join(tmp, "licensekit", lidString(lid))
+	if err := os.MkdirAll(filepath.Dir(base), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fpRaw, _ := hex.DecodeString(fp)
+	if err := writeWatermark(base, fpRaw, lid, time.Now().Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Verify(bundle, WithFingerprint(fp), WithLicenseID(lid), WithAutoWatermark())
+	if err != ErrClockAnomaly {
+		t.Fatalf("expected ErrClockAnomaly, got %v", err)
+	}
+}
+
+func TestVerify_BundlePathWinsOverAuto(t *testing.T) {
+	tmp := t.TempDir()
+	orig := userConfigDir
+	userConfigDir = func() (string, error) { return tmp, nil }
+	t.Cleanup(func() { userConfigDir = orig })
+
+	explicitDir := t.TempDir()
+	explicitPath := filepath.Join(explicitDir, "license.lkbundle")
+	fp := "00112233445566778899aabbccddeeff" + "00112233445566778899aabbccddeeff"
+	lid := [16]byte{1}
+	bundle := makeBundle(t, fp, lid, Claims{LID: "lic_x"})
+
+	if _, err := Verify(bundle, WithFingerprint(fp), WithLicenseID(lid),
+		WithBundlePath(explicitPath), WithAutoWatermark()); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	if _, err := os.Stat(explicitPath + ".lk-watermark"); err != nil {
+		t.Errorf("explicit sidecar missing: %v", err)
+	}
+	auto := filepath.Join(tmp, "licensekit", lidString(lid)+".lk-watermark")
+	if _, err := os.Stat(auto); err == nil {
+		t.Errorf("auto sidecar should not exist when WithBundlePath is set")
 	}
 }

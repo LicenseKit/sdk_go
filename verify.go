@@ -6,9 +6,31 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
+
+// userConfigDir is indirected for tests (os.UserConfigDir is not
+// env-overridable on macOS).
+var userConfigDir = os.UserConfigDir
+
+// resolveAutoWatermarkPath derives a stable sidecar base path from the
+// license ID under the OS user-config dir and ensures the parent dir
+// exists. The returned path has no suffix; read/writeWatermark append
+// ".lk-watermark" themselves.
+func resolveAutoWatermarkPath(lid [16]byte) (string, error) {
+	base, err := userConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("lk: WithAutoWatermark: %w", err)
+	}
+	dir := filepath.Join(base, "licensekit")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("lk: WithAutoWatermark: %w", err)
+	}
+	return filepath.Join(dir, lidString(lid)), nil
+}
 
 // bundlePayload is what's inside the AEAD-encrypted bytes (the JSON
 // the backend writes; the SDK only consumes).
@@ -103,8 +125,23 @@ func Verify(bundleBytes []byte, opts ...Option) (License, error) {
 		return nil, err
 	}
 
+	// Resolve an auto watermark path when requested and no explicit
+	// path was given. Explicit WithBundlePath wins.
+	if o.bundlePath == "" && o.autoWatermark {
+		p, err := resolveAutoWatermarkPath(o.licenseID)
+		if err != nil {
+			return nil, err
+		}
+		o.bundlePath = p
+	}
+
 	// 7. Watermark + clock-anomaly.
 	now := time.Now()
+	// Stateless clock-rollback floor: now can't precede the token's
+	// issue time (minus skew), regardless of any sidecar.
+	if iatFloorViolated(now, claims.IAT) {
+		return nil, ErrClockAnomaly
+	}
 	if o.bundlePath != "" {
 		wm, err := readWatermark(o.bundlePath, fp, o.licenseID)
 		if err != nil {

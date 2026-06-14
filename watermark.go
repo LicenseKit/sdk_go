@@ -16,6 +16,19 @@ import (
 
 const watermarkSuffix = ".lk-watermark"
 
+// clockSkewTolerance is how far the system clock may legitimately lag
+// behind a token's issue time (NTP drift, VM clock jitter) before the
+// SDK treats it as a rollback. Fixed, not configurable.
+const clockSkewTolerance = 5 * time.Minute
+
+// iatFloorViolated reports whether now is implausibly earlier than the
+// token's issue time (beyond clockSkewTolerance). Because claims.IAT is
+// inside the Ed25519-signed token it cannot be forged, so this is a
+// stateless clock-rollback signal that needs no watermark sidecar.
+func iatFloorViolated(now time.Time, iat int64) bool {
+	return now.Before(time.Unix(iat, 0).Add(-clockSkewTolerance))
+}
+
 // watermarkFile is the on-disk JSON layout.
 type watermarkFile struct {
 	LID      string `json:"lid"`       // prefixed (str form), human-readable

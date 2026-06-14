@@ -40,6 +40,9 @@ func (l *licenseImpl) Check() error {
 	defer l.mu.Unlock()
 
 	now := time.Now()
+	if iatFloorViolated(now, l.claims.IAT) {
+		return ErrClockAnomaly
+	}
 	if l.bundlePath != "" {
 		wm, err := readWatermark(l.bundlePath, l.fingerprint, l.licenseID)
 		if err != nil {

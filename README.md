@@ -140,6 +140,13 @@ periodically calls `Check` and emits events (`ExpiringSoon{Until}`,
 `Expired{Err}`, `ClockAnomaly{DetectedAt}`). Channel closes when ctx
 is cancelled.
 
+Monitor options:
+
+| Option | Default | Purpose |
+|---|---|---|
+| `WithInterval(d time.Duration)` | `1h` | Check cadence. Shorter intervals catch expiry faster; watermark writes stay throttled to ≤1/hour regardless. |
+| `WithEventLogger(*slog.Logger)` | `slog.Default()` | Logger for internal Monitor warnings (non-license Check errors). License-state events flow through the channel, not this logger. |
+
 ### Options
 
 | Option | Default | Purpose |
@@ -147,6 +154,7 @@ is cancelled.
 | `WithLicenseID(lid [16]byte)` | **required** | Raw 16-byte ULID of the license the bundle was minted for. |
 | `WithFingerprint(hex string)` | auto-capture via OS | Override the machine-fingerprint capture path. Use when running in Docker / exotic OS where the default can't get a stable identifier. |
 | `WithBundlePath(string)` | none | Where to read/write the `.lk-watermark` sidecar. If empty, watermark feature is disabled. |
+| `WithAutoWatermark()` | off | Enable the watermark sidecar at an SDK-chosen path derived from the license ID under the OS user-config dir. Ignored if `WithBundlePath` is set. Errors from `Verify` if the user-config dir can't be resolved. |
 | `WithLogger(*slog.Logger)` | `slog.Default()` | Where to emit WARN/ERROR records. |
 | `WithExpiringWarnings([]time.Duration)` | `[30d, 7d, 1d]` | Thresholds at which the SDK emits a WARN log on Verify/Check that the license is approaching expiry. |
 
@@ -170,11 +178,17 @@ The SDK assumes a hostile customer environment:
 - Customer may copy the bundle to other machines (`ErrWrongFingerprint`).
 - Customer may roll back the system clock (`ErrClockAnomaly` via watermark).
 - Customer may delete the watermark sidecar (SDK creates fresh, treats as TOFU — defeats this layer alone, but watermark + clock-rollback combined still catches typical fraud).
+  The signed token's `iat` (issue time) provides a file-independent floor:
+  the clock cannot be rolled back earlier than `iat` (minus a 5-minute skew
+  tolerance) even if the sidecar is deleted, since `iat` is inside the
+  Ed25519-signed token and cannot be forged.
 
 The SDK does NOT defend against:
 - Process memory dumps to extract claims after Verify succeeds.
 - Customer running their own modified verifier instead of this SDK.
 - Customer's IT colluding with the customer to defraud the vendor.
+- OS-native watermark storage (Keychain / Registry / secret-service) is a
+  possible future hardening layer, not currently implemented.
 
 These are out of scope by design — they require app-level obfuscation,
 attestation, or external enforcement (legal, EULA, audit).

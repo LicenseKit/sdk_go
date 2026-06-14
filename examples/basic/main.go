@@ -44,7 +44,7 @@ func main() {
 
 	lic, err := lk.Verify(bundle,
 		lk.WithLicenseID(lid),
-		lk.WithBundlePath(*bundlePath),
+		lk.WithAutoWatermark(),
 		lk.WithLogger(slog.Default()),
 	)
 	if err != nil {
@@ -63,7 +63,6 @@ func main() {
 		switch e := evt.(type) {
 		case lk.Expired:
 			fmt.Println("LICENSE EXPIRED — shutting down")
-			_ = e
 			return
 		case lk.ClockAnomaly:
 			fmt.Printf("CLOCK ROLLBACK detected at %v\n", e.DetectedAt)

@@ -12,6 +12,7 @@ type verifyOpts struct {
 	logger           *slog.Logger
 	fingerprint      string // explicit override; empty = capture via SDK
 	bundlePath       string // path for watermark sidecar
+	autoWatermark    bool   // derive sidecar path from license ID + user-config dir
 	expiringWarnings []time.Duration
 	licenseID        [16]byte
 	licenseIDSet     bool
@@ -41,11 +42,24 @@ func WithFingerprint(hex string) Option {
 }
 
 // WithBundlePath tells the SDK where to read/write the .lk-watermark
-// sidecar. Default: alongside the bundle file when Verify was
-// passed a file path. If Verify was called with raw bytes (no path),
-// the sidecar feature is disabled unless this option is set.
+// sidecar. Verify always takes raw bundle bytes (never a path), so
+// there is no path to default to: if this option is unset, the
+// watermark / clock-anomaly feature is disabled entirely. Pass the
+// path to the on-disk bundle to enable it.
+// Takes precedence over WithAutoWatermark when both are set.
 func WithBundlePath(path string) Option {
 	return func(o *verifyOpts) { o.bundlePath = path }
+}
+
+// WithAutoWatermark enables the watermark / clock-anomaly sidecar with
+// an SDK-chosen location, derived from the license ID under the OS
+// user-config directory (e.g. ~/.config/licensekit/<LID>.lk-watermark
+// on Linux). Use this when you don't want to manage a sidecar path
+// yourself. If WithBundlePath is also set, that explicit path wins and
+// this option is ignored. If the user-config directory can't be resolved
+// (e.g. no HOME on a service account), Verify returns an error.
+func WithAutoWatermark() Option {
+	return func(o *verifyOpts) { o.autoWatermark = true }
 }
 
 // WithExpiringWarnings overrides the default thresholds (30d / 7d /

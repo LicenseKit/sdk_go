@@ -6,6 +6,9 @@ bin/
 coverage.out
 *.cover
 
+# Local design/brainstorming docs (not part of the published package)
+docs/
+
 # IDE
 .idea/
 .vscode/
