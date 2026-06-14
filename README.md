@@ -12,7 +12,9 @@ happens locally against bytes the vendor delivered out-of-band.
 go get github.com/LicenseKit/sdk_go
 ```
 
-Requires Go 1.22+. No external dependencies beyond `golang.org/x/crypto` (HKDF) and `golang.org/x/sys` (Windows registry).
+Requires Go 1.25+ (bounded by the minimum that `golang.org/x/crypto`
+in our dependency graph requires). External deps: `golang.org/x/crypto`
+(HKDF) and `golang.org/x/sys` (Windows registry only).
 
 ## Quick start
 
