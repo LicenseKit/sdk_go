@@ -6,7 +6,7 @@
 // # Quickstart
 //
 //	bundle, _ := os.ReadFile("/etc/myapp/license.lkbundle")
-//	lic, err := lk.Verify(bundle, lk.WithLicenseID(lid), lk.WithLogger(myLogger))
+//	lic, err := lk.Verify(bundle, lk.WithLicenseIDString("lic_01H..."), lk.WithLogger(myLogger))
 //	if err != nil {
 //	    log.Fatalf("license: %v", err)
 //	}

@@ -1,9 +1,13 @@
 package lk
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
+
+	"github.com/oklog/ulid/v2"
 )
 
 // Option is a functional option for Verify.
@@ -17,6 +21,7 @@ type verifyOpts struct {
 	expiringWarnings []time.Duration
 	licenseID        [16]byte
 	licenseIDSet     bool
+	licenseIDErr     error // deferred parse error from WithLicenseIDString; returned by Verify
 	baseURL          string
 	httpClient       *http.Client
 	refreshBefore    time.Duration
@@ -75,21 +80,41 @@ func WithExpiringWarnings(thresholds []time.Duration) Option {
 	return func(o *verifyOpts) { o.expiringWarnings = thresholds }
 }
 
-// WithLicenseID is REQUIRED. The LKB1 wire format does not carry
-// the license ID in its unencrypted header — but HKDF salt uses it
-// to derive the AEAD key. The customer app KNOWS which license file
-// it's loading (it was minted for THAT license), so it passes the
-// raw 16-byte ULID here. Verify returns an error if this option
-// is missing.
+// WithLicenseID sets the license ID from raw 16-byte ULID bytes. A
+// license ID is REQUIRED by Verify: the LKB1 wire format does not carry
+// it in the unencrypted header, but the HKDF salt uses it to derive the
+// AEAD key, so the SDK must know it.
 //
-// To get the raw bytes from a prefixed string like "lic_01H...":
-//
-//	import "github.com/oklog/ulid/v2"
-//	u, _ := ulid.Parse(strings.TrimPrefix(idStr, "lic_"))
-//	var lidRaw [16]byte = u // ulid.ULID is [16]byte
+// Prefer WithLicenseIDString if you have the vendor-provided "lic_..."
+// string — it does the decoding for you. Use this only when you already
+// hold the raw bytes.
 func WithLicenseID(lidRaw [16]byte) Option {
 	return func(o *verifyOpts) {
 		o.licenseID = lidRaw
+		o.licenseIDSet = true
+	}
+}
+
+// WithLicenseIDString sets the license ID from the vendor-provided string
+// form (e.g. "lic_01H...") — the SDK strips the "lic_" prefix and decodes
+// the ULID to the raw 16 bytes Verify needs. Use WithLicenseID instead if
+// you already hold the raw [16]byte. A malformed value is reported as an
+// error from Verify (functional options cannot return one directly).
+//
+// Not to be confused with the online license key passed to Activate.
+func WithLicenseIDString(id string) Option {
+	return func(o *verifyOpts) {
+		rest, ok := strings.CutPrefix(id, "lic_")
+		if !ok {
+			o.licenseIDErr = fmt.Errorf("lk: license id %q must be a \"lic_\"-prefixed ULID", id)
+			return
+		}
+		u, err := ulid.Parse(rest)
+		if err != nil {
+			o.licenseIDErr = fmt.Errorf("lk: invalid license id %q: %w", id, err)
+			return
+		}
+		o.licenseID = u // ulid.ULID is [16]byte
 		o.licenseIDSet = true
 	}
 }

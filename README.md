@@ -24,9 +24,7 @@ package main
 import (
     "log/slog"
     "os"
-    "strings"
 
-    "github.com/oklog/ulid/v2"
     lk "github.com/LicenseKit/sdk_go"
 )
 
@@ -37,12 +35,8 @@ func main() {
         os.Exit(1)
     }
 
-    // Decode the license-id string your vendor provided.
-    u, _ := ulid.Parse(strings.TrimPrefix("lic_01H...", "lic_"))
-    var lidRaw [16]byte = u
-
     lic, err := lk.Verify(bundle,
-        lk.WithLicenseID(lidRaw),
+        lk.WithLicenseIDString("lic_01H..."), // the id string from your vendor
         lk.WithBundlePath("/etc/myapp/license.lkbundle"),
     )
     if err != nil {
@@ -147,7 +141,7 @@ go func() {
 Parses, decrypts, validates an LKB1 bundle. Returns a `License` handle
 on success.
 
-**Required:** `WithLicenseID(rawULID [16]byte)` — the license ID the
+**Required:** `WithLicenseIDString(id string)` (preferred) or `WithLicenseID(rawULID [16]byte)` — the license ID the
 bundle was minted for. The LKB1 wire format does NOT carry this in its
 unencrypted header (HKDF salt uses it), so the customer app must supply
 it explicitly.
@@ -188,7 +182,8 @@ Monitor options:
 
 | Option | Default | Purpose |
 |---|---|---|
-| `WithLicenseID(lid [16]byte)` | **required** | Raw 16-byte ULID of the license the bundle was minted for. |
+| `WithLicenseIDString(id string)` | one required | License ID in string form (`lic_01H...`); the SDK strips the prefix and decodes the ULID. Preferred. |
+| `WithLicenseID(lid [16]byte)` | one required | Raw 16-byte ULID of the license the bundle was minted for. Use only if you already hold raw bytes. |
 | `WithFingerprint(hex string)` | auto-capture via OS | Override the machine-fingerprint capture path. Use when running in Docker / exotic OS where the default can't get a stable identifier. |
 | `WithBundlePath(string)` | none | Where to read/write the `.lk-watermark` sidecar. If empty, watermark feature is disabled. |
 | `WithAutoWatermark()` | off | Enable the watermark sidecar at an SDK-chosen path derived from the license ID under the OS user-config dir. Ignored if `WithBundlePath` is set. Errors from `Verify` if the user-config dir can't be resolved. |

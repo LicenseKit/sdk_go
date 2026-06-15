@@ -6,7 +6,6 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,13 +19,13 @@ import (
 func main() {
 	var (
 		bundlePath = flag.String("bundle", "license.lkbundle", "path to bundle file")
-		licenseID  = flag.String("lid", "", "raw license id (32 hex chars)")
+		licenseID  = flag.String("lid", "", "license id string, e.g. lic_01H...")
 	)
 	flag.Parse()
 
 	if *licenseID == "" {
-		fmt.Fprintln(os.Stderr, "usage: basic -bundle <path> -lid <32-hex-chars>")
-		fmt.Fprintln(os.Stderr, "  (lid is the raw 16-byte ULID hex; ask your vendor for it)")
+		fmt.Fprintln(os.Stderr, "usage: basic -bundle <path> -lid lic_01H...")
+		fmt.Fprintln(os.Stderr, "  (lid is the prefixed license id your vendor gave you)")
 		os.Exit(2)
 	}
 
@@ -35,15 +34,8 @@ func main() {
 		fatal("read bundle", err)
 	}
 
-	lidBytes, err := hex.DecodeString(*licenseID)
-	if err != nil || len(lidBytes) != 16 {
-		fatal("license_id must be 32 hex chars", err)
-	}
-	var lid [16]byte
-	copy(lid[:], lidBytes)
-
 	lic, err := lk.Verify(bundle,
-		lk.WithLicenseID(lid),
+		lk.WithLicenseIDString(*licenseID),
 		lk.WithAutoWatermark(),
 		lk.WithLogger(slog.Default()),
 	)
