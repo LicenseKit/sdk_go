@@ -1,6 +1,8 @@
 # Built binaries (examples may produce some)
 bin/
 *.test
+examples/*/[a-z]*
+!examples/*/*.go
 
 # Coverage
 coverage.out

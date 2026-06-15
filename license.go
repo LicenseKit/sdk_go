@@ -2,6 +2,7 @@ package lk
 
 import (
 	"crypto/ed25519"
+	"encoding/hex"
 	"log/slog"
 	"sync"
 	"time"
@@ -13,6 +14,8 @@ type License interface {
 	Check() error
 	ValidUntil() time.Time
 	Until() time.Duration
+	Seats() (limit, used int)
+	Release() error
 }
 
 type licenseImpl struct {
@@ -26,16 +29,73 @@ type licenseImpl struct {
 	lastWatermarkWrite time.Time
 	warnings           []time.Duration
 	firedThresholds    map[time.Duration]bool
+
+	// online mode (zero/false when constructed via Verify)
+	online         bool
+	lkey           string
+	client         *client
+	clientMeta     *clientMeta
+	refreshBefore  time.Duration
+	revocationPoll time.Duration
+	lastRevocCheck time.Time
+	seatsLimit     int
+	seatsUsed      int
 }
 
-func (l *licenseImpl) Claims() Claims        { return l.claims }
-func (l *licenseImpl) ValidUntil() time.Time { return time.Unix(l.claims.Exp, 0) }
-func (l *licenseImpl) Until() time.Duration  { return time.Until(l.ValidUntil()) }
+// Claims/ValidUntil/Until lock because online Check() mutates l.claims
+// concurrently (e.g. from a Monitor goroutine). They take the lock
+// directly rather than calling each other to avoid re-entrant locking.
+func (l *licenseImpl) Claims() Claims {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.claims
+}
 
-// Check — cheap re-verification. Reads watermark, computes
-// effective_now = max(system, watermark.last_seen), compares to
-// claims.Exp. Throttled sidecar write (at most 1/hour).
+func (l *licenseImpl) ValidUntil() time.Time {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return time.Unix(l.claims.Exp, 0)
+}
+
+func (l *licenseImpl) Until() time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return time.Until(time.Unix(l.claims.Exp, 0))
+}
+
+// Seats reports the machine (seat) usage. For licenses created by Verify
+// (offline) it always returns (1, 1) — seat management is online-only.
+func (l *licenseImpl) Seats() (int, int) {
+	// l.online is set once at construction and never mutated.
+	if !l.online {
+		return 1, 1
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.seatsLimit, l.seatsUsed
+}
+
+// Release frees this machine's seat (online only; offline is a no-op).
+func (l *licenseImpl) Release() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.online || l.client == nil {
+		return nil
+	}
+	return l.client.release(l.lkey, hexFingerprint(l.fingerprint))
+}
+
+func hexFingerprint(fp []byte) string { return hex.EncodeToString(fp) }
+
+// Check — cheap re-verification. Online: refresh the token near expiry,
+// optionally poll revocation, enforce expiry. Offline: read watermark,
+// compare to claims.Exp, throttled sidecar write (at most 1/hour).
 func (l *licenseImpl) Check() error {
+	// l.online is set once at construction and never mutated.
+	if l.online {
+		return l.checkOnline()
+	}
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -43,6 +103,7 @@ func (l *licenseImpl) Check() error {
 	if iatFloorViolated(now, l.claims.IAT) {
 		return ErrClockAnomaly
 	}
+
 	if l.bundlePath != "" {
 		wm, err := readWatermark(l.bundlePath, l.fingerprint, l.licenseID)
 		if err != nil {
@@ -58,7 +119,7 @@ func (l *licenseImpl) Check() error {
 	}
 
 	// Emit expiring-soon warnings (each threshold fires once).
-	remaining := l.ValidUntil().Sub(now)
+	remaining := time.Unix(l.claims.Exp, 0).Sub(now)
 	for _, th := range l.warnings {
 		if remaining <= th && !l.firedThresholds[th] {
 			l.logger.Warn("lk: license expires soon",
@@ -74,6 +135,85 @@ func (l *licenseImpl) Check() error {
 			l.logger.Warn("lk: watermark write failed", "err", err.Error())
 		} else {
 			l.lastWatermarkWrite = now
+		}
+	}
+	return nil
+}
+
+// checkOnline performs the online re-verification. Network I/O (token
+// refresh + revocation poll) runs WITHOUT l.mu held — the lock is taken
+// only to snapshot inputs and to write back results — so concurrent
+// Check/Seats/Claims calls never block on a network round-trip.
+func (l *licenseImpl) checkOnline() error {
+	l.mu.Lock()
+	now := time.Now()
+	if iatFloorViolated(now, l.claims.IAT) {
+		l.mu.Unlock()
+		return ErrClockAnomaly
+	}
+	needRefresh := time.Until(time.Unix(l.claims.Exp, 0)) <= l.refreshBefore
+	needRevoc := l.revocationPoll > 0 && now.Sub(l.lastRevocCheck) >= l.revocationPoll
+	lkey := l.lkey
+	fp := hexFingerprint(l.fingerprint)
+	cm := l.clientMeta
+	pid := l.claims.PID
+	l.mu.Unlock()
+
+	// Refresh the token near expiry (no lock held during I/O).
+	if needRefresh {
+		resp, rerr := l.client.exchange(lkey, fp, cm)
+		switch {
+		case rerr == nil:
+			if keys, kerr := l.client.publicKeys(resp.Claims.PID); kerr == nil {
+				if claims, verr := verifyLK1(resp.Token, keys); verr == nil {
+					kb := make(map[string]string, len(keys))
+					for kid, pk := range keys {
+						kb[kid] = encodeKey(pk)
+					}
+					_ = writeCache(lkey, cacheEntry{Token: resp.Token, Claims: claims, Keys: kb, Seats: resp.Seats})
+					l.mu.Lock()
+					l.claims = claims
+					l.productKeys = keys
+					l.seatsLimit, l.seatsUsed = resp.Seats.Limit, resp.Seats.Used
+					l.mu.Unlock()
+				}
+			}
+		case rerr == ErrSeatLimitExceeded, rerr == ErrLicenseKeyInvalid:
+			return rerr
+			// other refresh errors: fall through on the cached token (grace).
+		}
+	}
+
+	// Optional revocation polling. Advance lastRevocCheck on the ATTEMPT
+	// (not only on success) so a down revocation endpoint isn't hammered on
+	// every Check — the next poll waits a full interval regardless.
+	if needRevoc {
+		l.mu.Lock()
+		l.lastRevocCheck = time.Now()
+		l.mu.Unlock()
+		if sr, err := l.client.revocations(pid); err == nil {
+			l.mu.Lock()
+			keys := l.productKeys
+			lid := l.claims.LID
+			l.mu.Unlock()
+			if list, verr := sr.verify(keys); verr == nil && list.contains(lid) {
+				return ErrRevoked
+			}
+		}
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if time.Now().Unix() >= l.claims.Exp {
+		return ErrExpired
+	}
+	remaining := time.Unix(l.claims.Exp, 0).Sub(now)
+	for _, th := range l.warnings {
+		if remaining <= th && !l.firedThresholds[th] {
+			l.logger.Warn("lk: license expires soon",
+				"in", remaining.Truncate(time.Hour).String(),
+				"threshold", th.String())
+			l.firedThresholds[th] = true
 		}
 	}
 	return nil

@@ -62,6 +62,43 @@ func main() {
 
 See `examples/basic/` for a runnable demo.
 
+## Online mode
+
+Instead of shipping a `.lkbundle`, hand the customer a license **key** and let
+the SDK fetch + verify a short-lived token, enforce machine (seat) limits, and
+cache for offline grace:
+
+```go
+lic, err := lk.Activate("lic_ABC123...",
+    lk.WithAppVersion("2.4.1"),
+)
+if err != nil {
+    // ErrLicenseKeyInvalid, ErrSeatLimitExceeded, ErrActivationFailed, ...
+    slog.Error("activation failed", "err", err)
+    os.Exit(1)
+}
+// On shutdown, free this machine's seat for another machine.
+defer lic.Release()
+
+limit, used := lic.Seats()
+slog.Info("activated", "subject", lic.Claims().Sub, "seats", fmt.Sprintf("%d/%d", used, limit))
+
+// Before each gated operation. Online: refreshes the token near expiry and
+// works from cache (grace) until the token's Exp when the network is down;
+// returns ErrRevoked / ErrExpired / ErrSeatLimitExceeded as appropriate.
+if err := lic.Check(); err != nil {
+    slog.Error("license check failed", "err", err)
+    return
+}
+```
+
+`Activate` calls the LicenseKit API (default `https://api.licensekit.io`,
+override with `lk.WithBaseURL`). The first successful activation is cached under
+the OS user-config dir, so a later start with no network still works until the
+cached token expires.
+
+See `examples/online/` for a runnable demo.
+
 ## ⚠️ Long-running servers
 
 If your app only calls `Verify` once at startup and runs for days or
@@ -157,6 +194,11 @@ Monitor options:
 | `WithAutoWatermark()` | off | Enable the watermark sidecar at an SDK-chosen path derived from the license ID under the OS user-config dir. Ignored if `WithBundlePath` is set. Errors from `Verify` if the user-config dir can't be resolved. |
 | `WithLogger(*slog.Logger)` | `slog.Default()` | Where to emit WARN/ERROR records. |
 | `WithExpiringWarnings([]time.Duration)` | `[30d, 7d, 1d]` | Thresholds at which the SDK emits a WARN log on Verify/Check that the license is approaching expiry. |
+| `WithBaseURL(string)` | `https://api.licensekit.io` | API host used by `Activate`. |
+| `WithHTTPClient(*http.Client)` | 10s timeout | Custom HTTP client for `Activate` (proxy/timeouts/tests). |
+| `WithRefreshBefore(d)` | 10% of token TTL | How long before token expiry `Check()` re-exchanges for a fresh token. |
+| `WithRevocationPolling(interval)` | off | Poll the product's signed revocation list during `Check()`. |
+| `WithAppVersion(string)` | none | App version reported in the activation audit metadata. |
 
 ### Errors
 
@@ -169,6 +211,10 @@ Monitor options:
 | `ErrClockAnomaly` | System time is BEFORE the high-watermark recorded in the sidecar. |
 | `ErrWatermarkTampered` | Sidecar HMAC validation failed. |
 | `ErrUnknownKID` | LK1 token's `kid` claim does not match any key in the bundle's `product_keys`. |
+| `ErrLicenseKeyInvalid` | The license key is malformed or not recognised by the server. |
+| `ErrSeatLimitExceeded` | Activating this machine would exceed the license's seat limit. |
+| `ErrActivationFailed` | Online activation could not complete (network/server) and no valid cached token exists. |
+| `ErrRevoked` | The license is listed in the product's signed revocation list. |
 
 ## Threat model
 

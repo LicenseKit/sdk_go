@@ -2,6 +2,7 @@ package lk
 
 import (
 	"log/slog"
+	"net/http"
 	"time"
 )
 
@@ -16,6 +17,11 @@ type verifyOpts struct {
 	expiringWarnings []time.Duration
 	licenseID        [16]byte
 	licenseIDSet     bool
+	baseURL          string
+	httpClient       *http.Client
+	refreshBefore    time.Duration
+	revocationPoll   time.Duration // 0 = disabled
+	appVersion       string
 }
 
 // defaultExpiringWarnings — thresholds the SDK logs WARN on.
@@ -88,10 +94,44 @@ func WithLicenseID(lidRaw [16]byte) Option {
 	}
 }
 
+// WithBaseURL overrides the LicenseKit API host used by Activate.
+// Default: https://api.licensekit.io.
+func WithBaseURL(url string) Option {
+	return func(o *verifyOpts) { o.baseURL = url }
+}
+
+// WithHTTPClient overrides the http.Client used by Activate (timeouts,
+// proxy, custom transport, tests). Default: 10s timeout.
+func WithHTTPClient(c *http.Client) Option {
+	return func(o *verifyOpts) { o.httpClient = c }
+}
+
+// WithRefreshBefore sets how long before token expiry Check() re-exchanges
+// for a fresh token. Default: 10% of the token's lifetime.
+func WithRefreshBefore(d time.Duration) Option {
+	return func(o *verifyOpts) { o.refreshBefore = d }
+}
+
+// WithRevocationPolling enables periodic checks of the product's signed
+// revocation list during Check(). Default: disabled (the short token TTL
+// already bounds revocation latency).
+func WithRevocationPolling(interval time.Duration) Option {
+	return func(o *verifyOpts) { o.revocationPoll = interval }
+}
+
+// WithAppVersion sets the app version reported in the audit `client`
+// block sent to the server (hostname/os/arch/sdk version are filled
+// automatically).
+func WithAppVersion(v string) Option {
+	return func(o *verifyOpts) { o.appVersion = v }
+}
+
 func newVerifyOpts(opts ...Option) *verifyOpts {
 	o := &verifyOpts{
 		logger:           slog.Default(),
 		expiringWarnings: defaultExpiringWarnings,
+		baseURL:          "https://api.licensekit.io",
+		httpClient:       &http.Client{Timeout: 10 * time.Second},
 	}
 	for _, fn := range opts {
 		fn(o)

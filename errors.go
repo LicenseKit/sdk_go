@@ -20,6 +20,8 @@ var (
 	// ErrInvalidSignature — LK1 token inside the bundle failed Ed25519
 	// signature verification. Indicates the bundle was tampered after
 	// issue OR signed by a key not in the bundle's product_keys list.
+	// Also returned when a signed revocation list fails signature
+	// verification in online mode.
 	ErrInvalidSignature = errors.New("lk: invalid LK1 signature")
 
 	// ErrExpired — bundle TTL has passed. The app must obtain a fresh
@@ -41,11 +43,30 @@ var (
 
 	// ErrUnknownKID — the LK1 token's `kid` claim does not match any
 	// key in the bundle's product_keys list. Indicates a bundle/key
-	// version mismatch; the vendor needs to re-issue.
+	// version mismatch; the vendor needs to re-issue. Also returned when
+	// a signed revocation list references a kid not in the known keys.
 	ErrUnknownKID = errors.New("lk: unknown kid in token")
 
 	// errMissingFingerprint — internal: no OS source available for
 	// fingerprint capture. Wrapped by CapturedFingerprint into a
 	// more informative error including the OS name.
 	errMissingFingerprint = errors.New("lk: no fingerprint sources available on this OS")
+
+	// ErrLicenseKeyInvalid — the license key string is malformed or not
+	// recognised by the server (bad format / unknown key).
+	ErrLicenseKeyInvalid = errors.New("lk: invalid license key")
+
+	// ErrSeatLimitExceeded — activating this machine would exceed the
+	// license's machine (seat) limit. Free a seat (Release on another
+	// machine) or raise the limit.
+	ErrSeatLimitExceeded = errors.New("lk: seat limit exceeded")
+
+	// ErrActivationFailed — the online activation could not complete
+	// (network error, non-2xx the SDK can't classify, no cached token to
+	// fall back to). Wraps the underlying cause.
+	ErrActivationFailed = errors.New("lk: activation failed")
+
+	// ErrRevoked — the license appears in the product's signed
+	// revocation list. Refuse to serve.
+	ErrRevoked = errors.New("lk: license revoked")
 )

@@ -16,6 +16,8 @@ func (m *mockLicense) Claims() Claims        { return Claims{} }
 func (m *mockLicense) Check() error          { return m.checkErr }
 func (m *mockLicense) ValidUntil() time.Time { return time.Now().Add(m.until) }
 func (m *mockLicense) Until() time.Duration  { return m.until }
+func (m *mockLicense) Seats() (int, int)     { return 1, 1 }
+func (m *mockLicense) Release() error        { return nil }
 
 func TestMonitor_EmitsExpired(t *testing.T) {
 	lic := &mockLicense{checkErr: ErrExpired}
