@@ -22,7 +22,9 @@
 // weeks without restart, license expiry will go undetected until
 // next launch. Either call lic.Check() periodically yourself OR
 // use lk.NewMonitor(lic) to spawn a background watcher that emits
-// events as expiry approaches.
+// events as expiry approaches. For require-heartbeat licenses, Monitor
+// also sends keep-alive pings on the server-supplied cadence and emits
+// SeatLost if the seat is dropped.
 //
 // # Wire format
 //

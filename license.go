@@ -1,6 +1,7 @@
 package lk
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"log/slog"
@@ -16,6 +17,8 @@ type License interface {
 	Until() time.Duration
 	Seats() (limit, used int)
 	Release() error
+	Heartbeat(ctx context.Context) error
+	HeartbeatInterval() time.Duration
 }
 
 type licenseImpl struct {
@@ -31,15 +34,16 @@ type licenseImpl struct {
 	firedThresholds    map[time.Duration]bool
 
 	// online mode (zero/false when constructed via Verify)
-	online         bool
-	lkey           string
-	client         *client
-	clientMeta     *clientMeta
-	refreshBefore  time.Duration
-	revocationPoll time.Duration
-	lastRevocCheck time.Time
-	seatsLimit     int
-	seatsUsed      int
+	online            bool
+	lkey              string
+	client            *client
+	clientMeta        *clientMeta
+	refreshBefore     time.Duration
+	revocationPoll    time.Duration
+	lastRevocCheck    time.Time
+	seatsLimit        int
+	seatsUsed         int
+	heartbeatInterval time.Duration // 0 = not required (offline always 0)
 }
 
 // Claims/ValidUntil/Until lock because online Check() mutates l.claims
@@ -83,6 +87,39 @@ func (l *licenseImpl) Release() error {
 		return nil
 	}
 	return l.client.release(l.lkey, hexFingerprint(l.fingerprint))
+}
+
+// HeartbeatInterval is the server-driven keep-alive cadence; 0 means the
+// license does not require heartbeats (and for offline licenses).
+func (l *licenseImpl) HeartbeatInterval() time.Duration {
+	if !l.online {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.heartbeatInterval
+}
+
+// Heartbeat pings the server to keep this machine's seat alive without
+// minting a new token. Offline licenses are a no-op. Network I/O runs
+// without l.mu held; on success the seat counters are refreshed.
+func (l *licenseImpl) Heartbeat(ctx context.Context) error {
+	if !l.online || l.client == nil {
+		return nil
+	}
+	l.mu.Lock()
+	lkey := l.lkey
+	fp := hexFingerprint(l.fingerprint)
+	l.mu.Unlock()
+
+	resp, err := l.client.heartbeat(ctx, lkey, fp)
+	if err != nil {
+		return err
+	}
+	l.mu.Lock()
+	l.seatsLimit, l.seatsUsed = resp.Seats.Limit, resp.Seats.Used
+	l.mu.Unlock()
+	return nil
 }
 
 func hexFingerprint(fp []byte) string { return hex.EncodeToString(fp) }
@@ -170,11 +207,16 @@ func (l *licenseImpl) checkOnline() error {
 					for kid, pk := range keys {
 						kb[kid] = encodeKey(pk)
 					}
-					_ = writeCache(lkey, cacheEntry{Token: resp.Token, Claims: claims, Keys: kb, Seats: resp.Seats})
+					hb := heartbeatIntervalFrom(resp.Heartbeat)
+					_ = writeCache(lkey, cacheEntry{
+						Token: resp.Token, Claims: claims, Keys: kb, Seats: resp.Seats,
+						HeartbeatSeconds: int(hb / time.Second),
+					})
 					l.mu.Lock()
 					l.claims = claims
 					l.productKeys = keys
 					l.seatsLimit, l.seatsUsed = resp.Seats.Limit, resp.Seats.Used
+					l.heartbeatInterval = hb
 					l.mu.Unlock()
 				}
 			}

@@ -2,6 +2,7 @@ package lk
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
@@ -41,9 +42,20 @@ type seatsDTO struct {
 }
 
 type exchangeResp struct {
-	Token  string   `json:"token"`
-	Claims Claims   `json:"claims"`
-	Seats  seatsDTO `json:"seats"`
+	Token     string            `json:"token"`
+	Claims    Claims            `json:"claims"`
+	Seats     seatsDTO          `json:"seats"`
+	Heartbeat *heartbeatInfoDTO `json:"heartbeat,omitempty"`
+}
+
+type heartbeatResp struct {
+	Alive bool     `json:"alive"`
+	Seats seatsDTO `json:"seats"`
+}
+
+type heartbeatInfoDTO struct {
+	Require         bool `json:"require"`
+	DurationSeconds int  `json:"duration_seconds"`
 }
 
 type apiError struct {
@@ -64,6 +76,12 @@ type releaseReq struct {
 
 func (c *client) release(key, fingerprint string) error {
 	return c.postJSON("/v1/certificates/release", releaseReq{Key: key, Fingerprint: fingerprint}, nil)
+}
+
+func (c *client) heartbeat(ctx context.Context, key, fingerprint string) (heartbeatResp, error) {
+	var out heartbeatResp
+	err := c.postJSONCtx(ctx, "/v1/certificates/heartbeat", releaseReq{Key: key, Fingerprint: fingerprint}, &out)
+	return out, err
 }
 
 // publicKeys fetches the product signing keys, skipping revoked ones.
@@ -100,11 +118,15 @@ func (c *client) revocations(pid string) (signedRevocation, error) {
 }
 
 func (c *client) postJSON(path string, body, out any) error {
+	return c.postJSONCtx(context.Background(), path, body, out)
+}
+
+func (c *client) postJSONCtx(ctx context.Context, path string, body, out any) error {
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("%w: marshal: %v", ErrActivationFailed, err)
 	}
-	req, err := http.NewRequest(http.MethodPost, c.baseURL+path, bytes.NewReader(buf))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(buf))
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrActivationFailed, err)
 	}
@@ -146,6 +168,8 @@ func (c *client) do(req *http.Request, out any) error {
 	switch ae.Code {
 	case "seat_limit_exceeded":
 		return ErrSeatLimitExceeded
+	case "machine_not_activated":
+		return ErrMachineNotActivated
 	case "license_key_invalid", "license_key_wrong_env", "license_key_unknown_kid", "license_not_found":
 		return ErrLicenseKeyInvalid
 	}

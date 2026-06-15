@@ -93,6 +93,11 @@ cached token expires.
 
 See `examples/online/` for a runnable demo.
 
+For floating / `require_heartbeat` licenses, keep the seat alive by running a
+`Monitor` (it pings on the server-supplied cadence) or by calling
+`lic.Heartbeat(ctx)` yourself. If the server drops the seat, the Monitor emits
+`lk.SeatLost` — re-`Activate` to recover.
+
 ## ⚠️ Long-running servers
 
 If your app only calls `Verify` once at startup and runs for days or
@@ -126,6 +131,9 @@ go func() {
             gracefulShutdown()
         case lk.ClockAnomaly:
             slog.Error("clock rollback detected", "at", e.DetectedAt)
+            gracefulShutdown()
+        case lk.SeatLost:
+            slog.Error("seat lost (re-activate)", "err", e.Err)
             gracefulShutdown()
         case lk.ExpiringSoon:
             slog.Warn("license expires soon", "in", e.Until)
@@ -168,8 +176,8 @@ type License interface {
 
 `lk.NewMonitor(lic).Start(ctx) <-chan Event` — background goroutine that
 periodically calls `Check` and emits events (`ExpiringSoon{Until}`,
-`Expired{Err}`, `ClockAnomaly{DetectedAt}`). Channel closes when ctx
-is cancelled.
+`Expired{Err}`, `ClockAnomaly{DetectedAt}`, `SeatLost{Err}` — the last
+only for `require_heartbeat` licenses). Channel closes when ctx is cancelled.
 
 Monitor options:
 
@@ -210,6 +218,7 @@ Monitor options:
 | `ErrSeatLimitExceeded` | Activating this machine would exceed the license's seat limit. |
 | `ErrActivationFailed` | Online activation could not complete (network/server) and no valid cached token exists. |
 | `ErrRevoked` | The license is listed in the product's signed revocation list. |
+| `ErrMachineNotActivated` | Heartbeat for a machine the server no longer has activated; re-Activate. |
 
 ## Threat model
 

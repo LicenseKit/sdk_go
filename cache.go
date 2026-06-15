@@ -15,10 +15,11 @@ import (
 // Claims is guaranteed by the LK1 signature (re-verified on read); Keys
 // are public. No secret material is stored.
 type cacheEntry struct {
-	Token  string            `json:"token"`
-	Claims Claims            `json:"claims"`
-	Keys   map[string]string `json:"keys"` // kid -> base64(std) 32-byte pubkey
-	Seats  seatsDTO          `json:"seats"`
+	Token            string            `json:"token"`
+	Claims           Claims            `json:"claims"`
+	Keys             map[string]string `json:"keys"` // kid -> base64(std) 32-byte pubkey
+	Seats            seatsDTO          `json:"seats"`
+	HeartbeatSeconds int               `json:"heartbeat_seconds"` // resolved ping interval; 0 if none
 }
 
 func encodeKey(pub ed25519.PublicKey) string {

@@ -1,6 +1,7 @@
 package lk
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -231,5 +232,54 @@ func TestCheck_GraceWhenServerDown(t *testing.T) {
 	srv.Close()
 	if err := lic.Check(); err != nil {
 		t.Fatalf("grace Check should pass on still-valid cached token, got %v", err)
+	}
+}
+
+func TestHeartbeat_UpdatesSeats(t *testing.T) {
+	var pinged bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/certificates/heartbeat" {
+			pinged = true
+			_ = json.NewEncoder(w).Encode(heartbeatResp{Alive: true, Seats: seatsDTO{Limit: 3, Used: 2}})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	l := &licenseImpl{online: true, lkey: "k", fingerprint: []byte{0xab}, client: newClient(srv.URL, srv.Client()), seatsUsed: 1, seatsLimit: 3}
+	if err := l.Heartbeat(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !pinged {
+		t.Fatal("heartbeat endpoint not called")
+	}
+	if _, used := l.Seats(); used != 2 {
+		t.Fatalf("seats not refreshed: used=%d want 2", used)
+	}
+}
+
+func TestHeartbeat_OfflineNoop(t *testing.T) {
+	l := &licenseImpl{online: false}
+	if err := l.Heartbeat(context.Background()); err != nil {
+		t.Fatalf("offline heartbeat must be no-op nil, got %v", err)
+	}
+	if l.HeartbeatInterval() != 0 {
+		t.Fatal("offline HeartbeatInterval must be 0")
+	}
+}
+
+func TestHeartbeatIntervalFrom(t *testing.T) {
+	if got := heartbeatIntervalFrom(nil); got != 0 {
+		t.Fatalf("nil → 0, got %v", got)
+	}
+	if got := heartbeatIntervalFrom(&heartbeatInfoDTO{Require: false, DurationSeconds: 600}); got != 0 {
+		t.Fatalf("require=false → 0, got %v", got)
+	}
+	if got := heartbeatIntervalFrom(&heartbeatInfoDTO{Require: true, DurationSeconds: 600}); got != 5*time.Minute {
+		t.Fatalf("600s → 5m, got %v", got)
+	}
+	if got := heartbeatIntervalFrom(&heartbeatInfoDTO{Require: true, DurationSeconds: 10}); got != 30*time.Second {
+		t.Fatalf("10s → floored 30s, got %v", got)
 	}
 }
