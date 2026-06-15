@@ -58,15 +58,17 @@ type bundleProductKey struct {
 // Verify parses + decrypts + validates an LKB1 bundle. Returns a
 // License handle on success.
 //
-// WithLicenseID is REQUIRED. The LKB1 wire format doesn't carry the
-// license ID in its unencrypted header; the HKDF salt uses it, so
-// the SDK must know it to derive the AEAD key. The customer app
-// knows which license file it's loading (it was minted for THAT
-// license), so passes it explicitly.
+// A license ID is REQUIRED — pass WithLicenseIDString("lic_...")
+// (preferred) or WithLicenseID(raw [16]byte). The LKB1 wire format
+// doesn't carry the license ID in its unencrypted header; the HKDF salt
+// uses it, so the SDK must know it to derive the AEAD key.
 func Verify(bundleBytes []byte, opts ...Option) (License, error) {
 	o := newVerifyOpts(opts...)
+	if o.licenseIDErr != nil {
+		return nil, o.licenseIDErr
+	}
 	if !o.licenseIDSet {
-		return nil, errors.New("lk: WithLicenseID is required — pass the raw 16-byte ULID the bundle was minted for")
+		return nil, errors.New("lk: a license ID is required — use WithLicenseIDString(\"lic_...\") or WithLicenseID(raw [16]byte)")
 	}
 
 	// 1. Resolve fingerprint.
