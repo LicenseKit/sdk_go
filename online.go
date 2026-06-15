@@ -9,6 +9,19 @@ import (
 	"time"
 )
 
+// heartbeatIntervalFrom derives the SDK ping cadence from the server's
+// heartbeat block: half the window, floored to 30s. Zero when not required.
+func heartbeatIntervalFrom(h *heartbeatInfoDTO) time.Duration {
+	if h == nil || !h.Require || h.DurationSeconds <= 0 {
+		return 0
+	}
+	d := time.Duration(h.DurationSeconds) * time.Second / 2
+	if d < 30*time.Second {
+		d = 30 * time.Second
+	}
+	return d
+}
+
 // sdkVersion is reported in the audit client block.
 const sdkVersion = "go/0.5.0"
 
@@ -64,13 +77,15 @@ func Activate(lkey string, opts ...Option) (License, error) {
 		return nil, ErrExpired
 	}
 
+	hb := heartbeatIntervalFrom(resp.Heartbeat)
+
 	kb := make(map[string]string, len(keys))
 	for kid, pk := range keys {
 		kb[kid] = encodeKey(pk)
 	}
-	_ = writeCache(lkey, cacheEntry{Token: resp.Token, Claims: claims, Keys: kb, Seats: resp.Seats})
+	_ = writeCache(lkey, cacheEntry{Token: resp.Token, Claims: claims, Keys: kb, Seats: resp.Seats, HeartbeatSeconds: int(hb / time.Second)})
 
-	return newOnlineLicense(lkey, fpRaw, claims, keys, resp.Seats, cm, o, c), nil
+	return newOnlineLicense(lkey, fpRaw, claims, keys, resp.Seats, hb, cm, o, c), nil
 }
 
 func activateFromCache(lkey string, fpRaw []byte, o *verifyOpts, c *client) (License, error) {
@@ -93,10 +108,11 @@ func activateFromCache(lkey string, fpRaw []byte, o *verifyOpts, c *client) (Lic
 	if now.Unix() >= claims.Exp {
 		return nil, ErrExpired
 	}
-	return newOnlineLicense(lkey, fpRaw, claims, keys, ent.Seats, buildClientMeta(o.appVersion), o, c), nil
+	hb := time.Duration(ent.HeartbeatSeconds) * time.Second
+	return newOnlineLicense(lkey, fpRaw, claims, keys, ent.Seats, hb, buildClientMeta(o.appVersion), o, c), nil
 }
 
-func newOnlineLicense(lkey string, fpRaw []byte, claims Claims, keys map[string]ed25519.PublicKey, seats seatsDTO, cm *clientMeta, o *verifyOpts, c *client) *licenseImpl {
+func newOnlineLicense(lkey string, fpRaw []byte, claims Claims, keys map[string]ed25519.PublicKey, seats seatsDTO, hbInterval time.Duration, cm *clientMeta, o *verifyOpts, c *client) *licenseImpl {
 	refresh := o.refreshBefore
 	if refresh <= 0 {
 		// Default: 10% of the token's full lifetime (Exp - IAT), so an
@@ -105,20 +121,21 @@ func newOnlineLicense(lkey string, fpRaw []byte, claims Claims, keys map[string]
 		refresh = life / 10
 	}
 	return &licenseImpl{
-		claims:          claims,
-		productKeys:     keys,
-		fingerprint:     fpRaw,
-		logger:          o.logger,
-		warnings:        o.expiringWarnings,
-		firedThresholds: map[time.Duration]bool{},
-		online:          true,
-		lkey:            lkey,
-		client:          c,
-		clientMeta:      cm,
-		refreshBefore:   refresh,
-		revocationPoll:  o.revocationPoll,
-		seatsLimit:      seats.Limit,
-		seatsUsed:       seats.Used,
+		claims:            claims,
+		productKeys:       keys,
+		fingerprint:       fpRaw,
+		logger:            o.logger,
+		warnings:          o.expiringWarnings,
+		firedThresholds:   map[time.Duration]bool{},
+		online:            true,
+		lkey:              lkey,
+		client:            c,
+		clientMeta:        cm,
+		refreshBefore:     refresh,
+		revocationPoll:    o.revocationPoll,
+		seatsLimit:        seats.Limit,
+		seatsUsed:         seats.Used,
+		heartbeatInterval: hbInterval,
 	}
 }
 

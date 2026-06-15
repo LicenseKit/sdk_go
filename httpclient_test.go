@@ -1,6 +1,7 @@
 package lk
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -99,5 +100,39 @@ func TestClient_Release(t *testing.T) {
 	}
 	if !hit {
 		t.Fatal("release not called")
+	}
+}
+
+func TestClient_Heartbeat(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/certificates/heartbeat" || r.Method != http.MethodPost {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		var req releaseReq
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Key != "k" || req.Fingerprint != "fp" {
+			t.Errorf("bad body: %+v", req)
+		}
+		_ = json.NewEncoder(w).Encode(heartbeatResp{Alive: true, Seats: seatsDTO{Limit: 5, Used: 3}})
+	}))
+	defer srv.Close()
+
+	resp, err := newClient(srv.URL, srv.Client()).heartbeat(context.Background(), "k", "fp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Alive || resp.Seats.Used != 3 {
+		t.Fatalf("bad resp: %+v", resp)
+	}
+}
+
+func TestClient_Heartbeat_NotActivated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(apiError{Code: "machine_not_activated", Message: "exchange first"})
+	}))
+	defer srv.Close()
+	if _, err := newClient(srv.URL, srv.Client()).heartbeat(context.Background(), "k", "fp"); err != ErrMachineNotActivated {
+		t.Fatalf("want ErrMachineNotActivated, got %v", err)
 	}
 }

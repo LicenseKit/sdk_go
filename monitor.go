@@ -14,9 +14,15 @@ type ExpiringSoon struct{ Until time.Duration }
 type Expired struct{ Err error }
 type ClockAnomaly struct{ DetectedAt time.Time }
 
+// SeatLost is emitted when a heartbeat is rejected because the machine is
+// no longer activated or the seat limit was exceeded — the app should
+// re-Activate.
+type SeatLost struct{ Err error }
+
 func (ExpiringSoon) event() {}
 func (Expired) event()      {}
 func (ClockAnomaly) event() {}
+func (SeatLost) event()     {}
 
 // Monitor wraps a License and periodically re-checks it from a
 // background goroutine. Long-running servers SHOULD use Monitor
@@ -69,16 +75,33 @@ func NewMonitor(lic License, opts ...MonitorOption) *Monitor {
 //	Expired      — Check returned ErrExpired (license TTL passed)
 //	ClockAnomaly — Check returned ErrClockAnomaly (sidecar last_seen > now)
 //	ExpiringSoon — Check OK, but Until() <= 30 days
+//	SeatLost     — a heartbeat was rejected (ErrMachineNotActivated or
+//	               ErrSeatLimitExceeded); the app should re-Activate
 //
 // Other Check errors (e.g., ErrWatermarkTampered) are logged but
 // not emitted as events — they indicate environmental issues, not
 // license state.
+//
+// If HeartbeatInterval() > 0 a second ticker fires at that cadence and
+// calls lic.Heartbeat(ctx). On seat-related errors it emits SeatLost;
+// other heartbeat errors are logged. When HeartbeatInterval() == 0 no
+// heartbeat ticker is started.
 func (m *Monitor) Start(ctx context.Context) <-chan Event {
 	out := make(chan Event, 4)
 	go func() {
 		defer close(out)
 		t := time.NewTicker(m.interval)
 		defer t.Stop()
+
+		// Optional heartbeat ticker (server-driven cadence). A nil channel
+		// in the select blocks forever, so a zero interval = no pinging.
+		var hbC <-chan time.Time
+		if hb := m.lic.HeartbeatInterval(); hb > 0 {
+			ht := time.NewTicker(hb)
+			defer ht.Stop()
+			hbC = ht.C
+		}
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -106,6 +129,18 @@ func (m *Monitor) Start(ctx context.Context) <-chan Event {
 					case out <- ExpiringSoon{Until: d}:
 					case <-ctx.Done():
 						return
+					}
+				}
+			case <-hbC:
+				if err := m.lic.Heartbeat(ctx); err != nil {
+					if errors.Is(err, ErrMachineNotActivated) || errors.Is(err, ErrSeatLimitExceeded) {
+						select {
+						case out <- SeatLost{Err: err}:
+						case <-ctx.Done():
+							return
+						}
+					} else {
+						m.logger.Warn("lk: heartbeat error", "err", err.Error())
 					}
 				}
 			}

@@ -66,6 +66,11 @@ var (
 	// fall back to). Wraps the underlying cause.
 	ErrActivationFailed = errors.New("lk: activation failed")
 
+	// ErrMachineNotActivated — a heartbeat/keep-alive was sent for a machine
+	// the server has no active record of (e.g. its seat lapsed). The app must
+	// Activate again before pinging.
+	ErrMachineNotActivated = errors.New("lk: machine not activated")
+
 	// ErrRevoked — the license appears in the product's signed
 	// revocation list. Refuse to serve.
 	ErrRevoked = errors.New("lk: license revoked")
